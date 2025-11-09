@@ -18,3 +18,9 @@ class Candle(BaseModel):
     volume: float
     num_trades: int
 
+class Indicator(BaseModel):
+    time: datetime
+    symbol: str
+    time_frame: int
+    atr_14: float
+

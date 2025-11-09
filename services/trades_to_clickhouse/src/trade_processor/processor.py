@@ -1,6 +1,7 @@
+from typing import Optional
 import clickhouse_connect
 from datetime import datetime
-from src.trade_processor.models import Candle
+from src.trade_processor.models import Candle, Indicator
 
 
 class TradeProcessor:
@@ -43,7 +44,7 @@ class TradeProcessor:
         self.client.command(
             '''
             CREATE TABLE IF NOT EXISTS crypto_dw.indicators (
-                time        DateTime(3, 'UTC'),
+                time        DateTime64(3, 'UTC'),
                 symbol      LowCardinality(String),
                 time_frame  UInt16,
                 atr_14      Float64
@@ -107,6 +108,58 @@ class TradeProcessor:
             SETTINGS index_granularity = 8192;
             '''
         )
+
+    def calculate_atr(
+        self,
+        symbol: str,
+        time_frame: int,
+        periods: int = 14
+    ) -> Optional[float]:
+        
+        candle_count_result = self.client.query(
+            f'''
+            SELECT
+                COUNT(*)
+            FROM crypto_dw.candles
+            WHERE symbol = '{symbol}'
+                AND time_frame = {time_frame}
+            '''
+        )
+        candle_count = candle_count_result.first_row[0]
+
+        if candle_count < periods + 1:
+            return None
+        
+        atr_result = self.client.query(
+            f'''
+            WITH tr_data AS (
+                SELECT
+                    time,
+                    high,
+                    low,
+                    close,
+                    lagInFrame(close) OVER( PARTITION BY symbol, time_frame ORDER BY TIME) AS prev_close
+                FROM 
+                    crypto_dw.candles
+                WHERE
+                    symbol = '{symbol}' AND time_frame = {time_frame}
+                ORDER BY 
+                    time DESC
+                LIMIT {periods + 1}
+            )
+            SELECT
+                AVG(GREATEST(
+                    high - low,
+                    abs(high - prev_close),
+                    abs(low - prev_close)
+                )) AS atr
+            FROM tr_data
+            WHERE prev_close IS NOT NULL
+            '''
+        )
+        atr = atr_result.first_row
+        return atr[0] if atr and atr[0] else None
+
     
     def insert_candle(self, candle: Candle):
         result = self.client.insert(
@@ -122,6 +175,20 @@ class TradeProcessor:
                     candle.close,
                     candle.volume,
                     candle.num_trades
+                ]
+            ]
+        )
+        return result.summary
+    
+    def insert_indicator(self, indicator: Indicator):
+        result = self.client.insert(
+            "crypto_dw.indicators",
+            [
+                [
+                    indicator.time,
+                    indicator.symbol,
+                    indicator.time_frame,
+                    indicator.atr_14
                 ]
             ]
         )

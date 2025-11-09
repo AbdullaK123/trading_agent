@@ -48,9 +48,9 @@ services:
     networks:
       - trading-network
 
-  trades_to_clickhouse:
+  trades_to_clickhouse_1m:
     build: ./services/trades_to_clickhouse
-    container_name: trades_to_clickhouse
+    container_name: trades_to_clickhouse_1m
     depends_on:
       - kafka
       - clickhouse
@@ -58,12 +58,49 @@ services:
     environment:
       KAFKA_BROKER_ADDRESS: kafka:19092
       KAFKA_TOPIC: trade
-      KAFKA_CONSUMER_GROUP: trades_to_clickhouse_consumer_group
+      KAFKA_CONSUMER_GROUP: trades_to_clickhouse_consumer_1m_group
       OHLCV_WINDOW_SECONDS: "60"
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "8123"
     networks:
       - trading-network
+
+
+  trades_to_clickhouse_1h:
+    build: ./services/trades_to_clickhouse
+    container_name: trades_to_clickhouse_1h
+    depends_on:
+      - kafka
+      - clickhouse
+      - trade_producer
+    environment:
+      KAFKA_BROKER_ADDRESS: kafka:19092
+      KAFKA_TOPIC: trade
+      KAFKA_CONSUMER_GROUP: trades_to_clickhouse_consumer_1h_group
+      OHLCV_WINDOW_SECONDS: "3600"
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+    networks:
+      - trading-network
+
+
+  trades_to_clickhouse_4h:
+    build: ./services/trades_to_clickhouse
+    container_name: trades_to_clickhouse_4h
+    depends_on:
+      - kafka
+      - clickhouse
+      - trade_producer
+    environment:
+      KAFKA_BROKER_ADDRESS: kafka:19092
+      KAFKA_TOPIC: trade
+      KAFKA_CONSUMER_GROUP: trades_to_clickhouse_4h_group  # Different group
+      OHLCV_WINDOW_SECONDS: "14400"  # 4-hour candles
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+    networks:
+      - trading-network
+      
 volumes:
   kafka-data:
   clickhouse-data:

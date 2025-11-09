@@ -1,7 +1,7 @@
 from datetime import timedelta, datetime
 from typing import Any, List, Optional, Tuple
 from src.config import config
-from src.trade_processor.models import Candle
+from src.trade_processor.models import Candle, Indicator
 from src.trade_processor.processor import TradeProcessor
 from quixstreams import Application
 from loguru import logger
@@ -97,9 +97,22 @@ def run_clickhouse_consumer(
             )
             
             # Insert to ClickHouse
-            summary = processor.insert_candle(candle)
+            _ = processor.insert_candle(candle)
             logger.info(f"Inserted candle: {candle.symbol} @ {candle_time} | OHLCV: {candle.open:.2f}/{candle.high:.2f}/{candle.low:.2f}/{candle.close:.2f}/{candle.volume:.4f} | Trades: {candle.num_trades}")
-            
+
+            # Insert indicators
+            atr = processor.calculate_atr(candle_data['product_id'], ohlvc_window_seconds)
+
+            if atr:
+                indicator = Indicator(
+                    time=candle_time,
+                    symbol=candle_data['product_id'],
+                    time_frame=ohlvc_window_seconds,
+                    atr_14=atr
+                )
+                _ = processor.insert_indicator(indicator)
+                logger.info(f"Inserted indicator: {indicator.symbol} @ {candle_time} | ATR: {atr}")
+                
             return candle_data
         except Exception as e:
             logger.error(f"Error processing window: {e}")
