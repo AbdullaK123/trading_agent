@@ -1,0 +1,73 @@
+services:
+  kafka:
+    image: apache/kafka:latest
+    container_name: kafka
+    ports:
+      - "19092:19092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://kafka:19092,CONTROLLER://kafka:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - trading-network
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse
+    ports:
+      - "8123:8123"  # HTTP interface
+      - "9000:9000"  # Native client
+    environment:
+      CLICKHOUSE_DB: crypto_dw
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    networks:
+      - trading-network
+
+  trade_producer:
+    build: ./services/trade_producer
+    container_name: trade_producer
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BROKER_ADDRESS: kafka:19092
+      KAFKA_TOPIC: trade
+      PRODUCT_IDS: '["BTC/USD"]'
+    networks:
+      - trading-network
+
+  trades_to_clickhouse:
+    build: ./services/trades_to_clickhouse
+    container_name: trades_to_clickhouse
+    depends_on:
+      - kafka
+      - clickhouse
+      - trade_producer
+    environment:
+      KAFKA_BROKER_ADDRESS: kafka:19092
+      KAFKA_TOPIC: trade
+      KAFKA_CONSUMER_GROUP: trades_to_clickhouse_consumer_group
+      OHLCV_WINDOW_SECONDS: "60"
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+    networks:
+      - trading-network
+volumes:
+  kafka-data:
+  clickhouse-data:
+
+networks:
+  trading-network:
+    driver: bridge
