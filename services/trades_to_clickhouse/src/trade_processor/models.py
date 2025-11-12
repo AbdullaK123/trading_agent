@@ -23,4 +23,8 @@ class Indicator(BaseModel):
     symbol: str
     time_frame: int
     atr_14: float
+    rsi_14: float
+    ema_14: float
+    sma_14: float
+    macd: float
 

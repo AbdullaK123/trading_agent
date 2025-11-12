@@ -101,17 +101,40 @@ def run_clickhouse_consumer(
             logger.info(f"Inserted candle: {candle.symbol} @ {candle_time} | OHLCV: {candle.open:.2f}/{candle.high:.2f}/{candle.low:.2f}/{candle.close:.2f}/{candle.volume:.4f} | Trades: {candle.num_trades}")
 
             # Insert indicators
-            atr = processor.calculate_atr(candle_data['product_id'], ohlvc_window_seconds)
+            try:
+                atr = processor.calculate_atr(candle_data['product_id'], ohlvc_window_seconds)
+                logger.info(f"ATR calculation result for {candle_data['product_id']} @ {candle_time}: {atr}")
 
-            if atr:
-                indicator = Indicator(
-                    time=candle_time,
-                    symbol=candle_data['product_id'],
-                    time_frame=ohlvc_window_seconds,
-                    atr_14=atr
-                )
-                _ = processor.insert_indicator(indicator)
-                logger.info(f"Inserted indicator: {indicator.symbol} @ {candle_time} | ATR: {atr}")
+                rsi = processor.calculate_rsi(candle_data['product_id'], ohlvc_window_seconds)
+                logger.info(f"RSI calculation result for {candle_data['product_id']} @ {candle_time}: {rsi}")
+
+                ema = processor.calculate_ema(candle_data['product_id'], ohlvc_window_seconds)
+                logger.info(f"EMA calculation result for {candle_data['product_id']} @ {candle_time}: {ema}")
+                
+                sma = processor.calculate_sma(candle_data['product_id'], ohlvc_window_seconds)
+                logger.info(f"SMA calculation result for {candle_data['product_id']} @ {candle_time}: {sma}")
+
+                macd = processor.calculate_macd(candle_data['product_id'], ohlvc_window_seconds)
+                logger.info(f"MACD calculation result for {candle_data['product_id']} @ {candle_time}: {macd}")
+
+                if atr and rsi and ema and sma and macd:
+                    indicator = Indicator(
+                        time=candle_time,
+                        symbol=candle_data['product_id'],
+                        time_frame=ohlvc_window_seconds,
+                        atr_14=atr,
+                        rsi_14=rsi,
+                        ema_14=ema,
+                        sma_14=sma,
+                        macd=macd
+                    )
+                    _ = processor.insert_indicator(indicator)
+                    logger.info(f"✅ Inserted indicator: {indicator.symbol} @ {candle_time} | ATR: {atr:.2f} / RSI: {rsi:.2f} / EMA: {ema:.2f} / SMA: {sma:.2f} / MACD: {macd:.2f}")
+                else:
+                    logger.warning(f"Could not calculate technical indicators for {candle_data['product_id']} @ {candle_time} - not enough candles yet")
+
+            except Exception as e:
+                logger.error(f"Error calculating/inserting indicator: {e}")
                 
             return candle_data
         except Exception as e:

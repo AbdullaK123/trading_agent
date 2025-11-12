@@ -1,6 +1,7 @@
 from typing import Optional
 import clickhouse_connect
 from datetime import datetime
+import math
 from src.trade_processor.models import Candle, Indicator
 
 
@@ -47,7 +48,11 @@ class TradeProcessor:
                 time        DateTime64(3, 'UTC'),
                 symbol      LowCardinality(String),
                 time_frame  UInt16,
-                atr_14      Float64
+                atr_14      Float64,
+                rsi_14      Float64,
+                ema_14      Float64,
+                sma_14      Float64,
+                macd        Float64
             )
             ENGINE = MergeTree
             PARTITION BY toYYYYMM(time)
@@ -109,13 +114,11 @@ class TradeProcessor:
             '''
         )
 
-    def calculate_atr(
+    def _get_candle_count(
         self,
         symbol: str,
-        time_frame: int,
-        periods: int = 14
-    ) -> Optional[float]:
-        
+        time_frame: int
+    ) -> int:
         candle_count_result = self.client.query(
             f'''
             SELECT
@@ -125,9 +128,19 @@ class TradeProcessor:
                 AND time_frame = {time_frame}
             '''
         )
-        candle_count = candle_count_result.first_row[0]
+        return candle_count_result.first_row[0]
+    
+    def _has_enough_candles(self, symbol: str, time_frame: int,  periods:int = 14) -> bool:
+        return self._get_candle_count(symbol, time_frame) > periods + 1
 
-        if candle_count < periods + 1:
+    def calculate_atr(
+        self,
+        symbol: str,
+        time_frame: int,
+        periods: int = 14
+    ) -> Optional[float]:
+        
+        if not self._has_enough_candles(symbol, time_frame, periods):
             return None
         
         atr_result = self.client.query(
@@ -138,7 +151,7 @@ class TradeProcessor:
                     high,
                     low,
                     close,
-                    lagInFrame(close) OVER( PARTITION BY symbol, time_frame ORDER BY TIME) AS prev_close
+                    lagInFrame(close) OVER( PARTITION BY symbol, time_frame ORDER BY time) AS prev_close
                 FROM 
                     crypto_dw.candles
                 WHERE
@@ -159,6 +172,207 @@ class TradeProcessor:
         )
         atr = atr_result.first_row
         return atr[0] if atr and atr[0] else None
+    
+
+    def calculate_rsi(
+        self,
+        symbol: str,
+        time_frame: int,
+        periods: int = 14
+    ) -> Optional[float]:
+        
+        if not self._has_enough_candles(symbol, time_frame, periods):
+            return None
+        
+        rsi_result = self.client.query(
+            f'''
+            WITH rsi_data AS (
+                SELECT
+                    time,
+                    close,
+                    lagInFrame(close) OVER (PARTITION BY symbol, time_frame ORDER BY time) AS prev_close
+                FROM 
+                    crypto_dw.candles
+                WHERE
+                    symbol = '{symbol}' AND time_frame = {time_frame}
+                ORDER BY 
+                    time DESC
+                LIMIT {periods + 1}
+            ),
+            changes AS (
+                SELECT
+                    close - prev_close AS change
+                FROM 
+                    rsi_data
+                WHERE 
+                    prev_close IS NOT NULL 
+            ),
+            gains_and_losses AS (
+                SELECT
+                    AVG(IF(change > 0, change, 0)) AS avg_gain,
+                    AVG(IF(change < 0, -change, 0)) AS avg_loss
+                FROM 
+                    changes
+            )
+            SELECT
+                IF(
+                    avg_loss = 0,
+                    100,  
+                    100 - (100 / (1 + (avg_gain / avg_loss)))
+                ) AS rsi
+            FROM
+                gains_and_losses
+            '''
+        )
+        rsi = rsi_result.first_row
+        return rsi[0] if rsi and rsi[0] is not None else None
+
+    def calculate_sma(
+        self,
+        symbol: str,
+        time_frame: int,
+        periods: int = 14
+    ) -> Optional[float]:
+        
+        if periods < 1 or not self._has_enough_candles(symbol, time_frame, periods - 1):
+            return None
+        
+        sma_result = self.client.query(
+            f'''
+            WITH raw_data AS (
+                SELECT
+                    time,
+                    close
+                FROM
+                    crypto_dw.candles
+                WHERE
+                    symbol='{symbol}' AND time_frame={time_frame}
+                ORDER BY
+                    time DESC
+                LIMIT {periods}
+            )
+            SELECT 
+                AVG(close)
+            FROM 
+                raw_data
+            '''
+        )
+        sma = sma_result.first_row
+        return sma[0] if sma and sma[0] else None
+
+
+    def calculate_ema(
+        self,
+        symbol: str,
+        time_frame: int,
+        periods: int = 14
+    ) -> Optional[float]:
+        
+        if periods < 1 or not self._has_enough_candles(symbol, time_frame, periods - 1):
+            return None
+        
+        alpha = 2 / (periods + 1)
+        half_life = math.log(0.5) / math.log(1 - alpha)
+
+        ema_result = self.client.query(
+            f'''
+            WITH raw_data AS (
+                SELECT
+                    time,
+                    close
+                FROM
+                    crypto_dw.candles
+                WHERE
+                    symbol='{symbol}' AND time_frame={time_frame}
+                ORDER BY
+                    time DESC
+                LIMIT {periods}
+            ), 
+            sorted AS (
+                SELECT *
+                FROM raw_data
+                ORDER BY time ASC
+            ),
+            data_with_t AS (
+                SELECT 
+                    *,
+                    ROW_NUMBER() OVER (ORDER BY time ASC) AS t
+                FROM
+                    sorted
+            )
+            SELECT
+                exponentialMovingAverage({half_life})(close, t) OVER (ORDER BY t ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS ema
+            FROM
+                data_with_t
+            ORDER BY
+                t DESC
+            LIMIT 1
+            '''
+        )
+        ema = ema_result.first_row
+        return ema[0] if ema and ema[0] else None
+
+    def calculate_macd(
+        self,
+        symbol: str,
+        time_frame: int,
+        fast: int = 12,
+        slow: int = 26
+    ) -> Optional[float]:
+
+        if slow < 1 or not self._has_enough_candles(symbol, time_frame, slow - 1):
+            return None
+
+        fast_alpha = 2 / (fast + 1)
+        slow_alpha = 2 / (slow + 1)
+
+        fast_half_life = math.log(0.5) / math.log(1 - fast_alpha)
+        slow_half_life = math.log(0.5) / math.log(1 - slow_alpha)
+
+        macd_result = self.client.query(
+            f'''
+            WITH raw_data AS (
+                SELECT
+                    time,
+                    close
+                FROM
+                    crypto_dw.candles
+                WHERE
+                    symbol='{symbol}' AND time_frame={time_frame}
+                ORDER BY
+                    time DESC
+                LIMIT {slow}
+            ), 
+            sorted AS (
+                SELECT *
+                FROM raw_data
+                ORDER BY time ASC
+            ),
+            data_with_t AS (
+                SELECT 
+                    *,
+                    ROW_NUMBER() OVER (ORDER BY time ASC) AS t
+                FROM
+                    sorted
+            ),
+            slow_and_fast AS (
+                SELECT
+                    exponentialMovingAverage({slow_half_life})(close, t) OVER (ORDER BY t ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS slow_ema,
+                    exponentialMovingAverage({fast_half_life})(close, t) OVER (ORDER BY t ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS fast_ema
+                FROM
+                    data_with_t
+            )
+            SELECT
+                fast_ema - slow_ema
+            FROM
+                slow_and_fast
+            '''
+        )
+
+        macd = macd_result.first_row
+
+        return macd[0] if macd and macd[0] else None
+
 
     
     def insert_candle(self, candle: Candle):
@@ -188,7 +402,11 @@ class TradeProcessor:
                     indicator.time,
                     indicator.symbol,
                     indicator.time_frame,
-                    indicator.atr_14
+                    indicator.atr_14,
+                    indicator.rsi_14,
+                    indicator.ema_14,
+                    indicator.sma_14,
+                    indicator.macd
                 ]
             ]
         )
